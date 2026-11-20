@@ -1,0 +1,87 @@
+name: Sync release
+
+on:
+  schedule:
+    # Fallback poll every 6 hours in case a manual or cross-repo dispatch was skipped.
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      allow_downgrade:
+        description: "Allow an intentional rollback to an older latest release"
+        type: boolean
+        default: false
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: sync-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync Deskset cask
+    if: github.repository == 'jokyme/homebrew-tap' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Sync cask with latest published release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ALLOW_DOWNGRADE: ${{ inputs.allow_downgrade }}
+        run: |
+          if [[ "$ALLOW_DOWNGRADE" == "true" ]]; then
+            python3 scripts/sync-release.py --allow-downgrade
+          else
+            python3 scripts/sync-release.py
+          fi
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet -- Casks/deskset.rb; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Casks/deskset.rb already matches the latest release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Homebrew for validation
+        id: set-up-homebrew
+        if: steps.changes.outputs.changed == 'true'
+        uses: Homebrew/actions/setup-homebrew@c262868c096d909fc278daa87ed9772967331ea3 # 2026.11.02.1
+        with:
+          test-bot: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate updated cask style
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          TAP_NAME="${{ steps.set-up-homebrew.outputs.tap-name }}"
+          TAP_DIR="$(brew --repo "$TAP_NAME")"
+          cp Casks/deskset.rb "$TAP_DIR/Casks/deskset.rb"
+          brew style "$TAP_NAME"
+
+      - name: Confirm release did not change during validation
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/sync-release.py --check
+
+      - name: Commit and push updated cask
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          VERSION="$(sed -n 's/^[[:space:]]*version "\([^"]*\)".*/\1/p' Casks/deskset.rb)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- Casks/deskset.rb
+          git commit -m "deskset ${VERSION}"
+          git push origin HEAD:main
+          echo "Updated Casks/deskset.rb to ${VERSION}." >> "$GITHUB_STEP_SUMMARY"

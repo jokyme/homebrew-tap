@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  style-and-sync-check:
+    name: Tap style and release check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@c262868c096d909fc278daa87ed9772967331ea3 # 2026.11.02.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache Homebrew Bundler RubyGems
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: ubuntu-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: ubuntu-rubygems-
+
+      - name: Check tap style
+        run: brew style "${{ steps.set-up-homebrew.outputs.tap-name }}"
+
+  audit-cask:
+    name: Online cask audit (macOS)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@c262868c096d909fc278daa87ed9772967331ea3 # 2026.11.02.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trust and audit cask
+        run: |
+          TAP_NAME="${{ steps.set-up-homebrew.outputs.tap-name }}"
+          brew trust --cask "${TAP_NAME}/deskset"
+          brew audit --cask --online "${TAP_NAME}/deskset"
+          brew livecheck "${TAP_NAME}/deskset"
